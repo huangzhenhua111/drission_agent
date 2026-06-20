@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Search</title>
+  <style>
+    body {
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      margin: 40px;
+      color: #1f2937;
+    }
+    main {
+      max-width: 760px;
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+    input {
+      width: 320px;
+      padding: 8px 10px;
+      border: 1px solid #9ca3af;
+      border-radius: 4px;
+    }
+    button,
+    a {
+      display: inline-block;
+      margin-top: 12px;
+    }
+    .result {
+      margin-top: 20px;
+      padding: 12px 0;
+      border-top: 1px solid #e5e7eb;
+    }
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Local Search</h1>
+    <form id="search-form">
+      <label for="search-input">Search keyword</label>
+      <input id="search-input" name="q" type="search" placeholder="Type keyword">
+      <button id="search-button" type="submit">Search</button>
+    </form>
+    <section id="results" aria-label="Search results" class="hidden">
+      <article class="result" data-result-rank="1">
+        <h2><a id="first-result" data-testid="result-alpha" href="detail-alpha.html">Alpha detail</a></h2>
+        <p>First matching result for alpha.</p>
+      </article>
+      <article class="result" data-result-rank="2">
+        <h2><a data-testid="result-beta" href="#beta">Beta detail</a></h2>
+        <p>Secondary result.</p>
+      </article>
+    </section>
+  </main>
+  <script>
+    document.getElementById("search-form").addEventListener("submit", function (event) {
+      event.preventDefault();
+      var keyword = document.getElementById("search-input").value.trim().toLowerCase();
+      if (keyword === "alpha") {
+        document.getElementById("results").classList.remove("hidden");
+      }
+    });
+  </script>
+</body>
+</html>
+

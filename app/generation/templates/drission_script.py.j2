@@ -1,0 +1,17 @@
+from DrissionPage import ChromiumPage
+
+
+def main():
+    page = ChromiumPage()
+    try:
+{% for action in actions %}
+        # {{ action.comment }}
+        pass
+{% endfor %}
+    finally:
+        page.quit()
+
+
+if __name__ == "__main__":
+    main()
+

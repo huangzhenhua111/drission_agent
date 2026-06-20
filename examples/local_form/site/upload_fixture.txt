@@ -1,0 +1,2 @@
+fixture file for local upload automation
+

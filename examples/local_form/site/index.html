@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Form</title>
+  <style>
+    body {
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      margin: 40px;
+      color: #1f2937;
+    }
+    main {
+      max-width: 680px;
+    }
+    label {
+      display: block;
+      margin-top: 16px;
+      margin-bottom: 6px;
+      font-weight: 700;
+    }
+    input,
+    select {
+      width: 320px;
+      padding: 8px 10px;
+      border: 1px solid #9ca3af;
+      border-radius: 4px;
+    }
+    button {
+      display: block;
+      margin-top: 20px;
+      padding: 9px 14px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Local Form</h1>
+    <form id="profile-form" action="submitted.html" method="get">
+      <label for="name-input">Name</label>
+      <input id="name-input" name="name" type="text" placeholder="Your name" autocomplete="off">
+
+      <label for="type-select">Type</label>
+      <select id="type-select" name="type">
+        <option value="">Please select</option>
+        <option value="one">One</option>
+        <option value="two">Two</option>
+        <option value="three">Three</option>
+      </select>
+
+      <label for="fixture-file">Upload file</label>
+      <input id="fixture-file" name="fixture" type="file">
+
+      <button id="submit-button" type="submit">Submit</button>
+    </form>
+  </main>
+</body>
+</html>
+

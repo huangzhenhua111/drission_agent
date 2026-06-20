@@ -1,0 +1,2 @@
+打开本地表单页面，在姓名输入框输入 Alice，在类型下拉框选择 Two，上传 upload_fixture.txt，然后点击提交。
+
