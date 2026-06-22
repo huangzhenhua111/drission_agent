@@ -53,6 +53,10 @@ ACTION_FIELDS = {
         "related_item_candidate_id",
         "related_item_context",
     ],
+    "double_click": [
+        "href", "accessible_name", "label_text", "context_text",
+        "ancestor_text", "result_rank",
+    ],
     "input": [
         "placeholder",
         "value",
@@ -76,6 +80,24 @@ ACTION_FIELDS = {
         "upload_label",
         "upload_kind",
         "nearest_card_text",
+    ],
+    "set_range": [
+        "value",
+        "accessible_name",
+        "label_text",
+        "context_text",
+    ],
+    "set_timecode": [
+        "value",
+        "accessible_name",
+        "label_text",
+        "context_text",
+    ],
+    "drag": [
+        "value",
+        "accessible_name",
+        "label_text",
+        "context_text",
     ],
 }
 
@@ -143,11 +165,23 @@ def _is_allowed_for_action(action_type: str, candidate: dict, step: dict) -> boo
     semantic_type = candidate.get("semantic_type")
     is_visible = candidate.get("is_visible") is not False
 
-    if action_type == "click":
+    if action_type in {"click", "double_click"}:
         if not is_visible:
             return False
         if semantic_type in {"file_input", "select", "textarea"}:
             return False
+        if action_type == "double_click" and semantic_type == "contenteditable":
+            target = " ".join(
+                str(step.get(key) or "").lower() for key in ("target", "comment")
+            )
+            wants_canvas_text = any(
+                marker in target
+                for marker in (
+                    "text box", "text object", "canvas text", "text editor",
+                    "文字框", "文本框", "文字对象", "画布文字",
+                )
+            )
+            return wants_canvas_text and _looks_like_canvas_text_contenteditable(candidate)
         if tag == "input" and type_value not in CLICK_INPUT_TYPES:
             return _target_wants_focus(step)
         if tag in {"button", "a"}:
@@ -182,7 +216,43 @@ def _is_allowed_for_action(action_type: str, candidate: dict, step: dict) -> boo
             tag == "input" and type_value == "file"
         )
 
+    if action_type == "set_range":
+        if not is_visible:
+            return False
+        if tag == "input" and type_value in {"range", "number"}:
+            return True
+        if tag == "input" and type_value == "text":
+            return _looks_like_numeric_value_input(candidate)
+        if role == "textbox" or candidate.get("contenteditable") == "true":
+            return _looks_like_numeric_value_input(candidate)
+        return False
+
+    if action_type == "set_timecode":
+        return is_visible and semantic_type == "composite_time_input"
+
+    if action_type == "drag":
+        if not is_visible:
+            return False
+        return "click" in (candidate.get("action_allowed") or []) or semantic_type == "clickable_item"
+
     return bool(candidate.get("selector_candidates"))
+
+
+def _looks_like_canvas_text_contenteditable(candidate: dict) -> bool:
+    if candidate.get("semantic_type") != "contenteditable":
+        return False
+    direct = " ".join(
+        str(candidate.get(key) or "").lower()
+        for key in ("class_name", "placeholder", "css_path", "accessible_name")
+    )
+    data_attrs = candidate.get("data_attrs") or {}
+    if "name-input" in direct:
+        return False
+    return (
+        "text-renderer" in direct
+        or "sample text" in direct
+        or "data-track-id" in data_attrs
+    )
 
 
 def _action_rank(action_type: str, candidate: dict, step: dict) -> tuple[int, int, int, int]:
@@ -192,24 +262,40 @@ def _action_rank(action_type: str, candidate: dict, step: dict) -> tuple[int, in
     text_blob = _candidate_blob(candidate)
     score = 0
 
-    if action_type == "click":
+    if action_type in {"click", "double_click"}:
         requested_rank = _requested_rank(target)
         wants_ranked_item = _wants_ranked_item(target)
         wants_item_action = _wants_item_action(target)
         candidate_rank = _candidate_rank(candidate)
+        has_target_evidence = _candidate_has_target_evidence(target, text_blob)
         wants_tab = _wants_tab(target)
         if wants_tab:
             if str(candidate.get("role") or "").lower() == "tab":
                 score += 120
             elif semantic_type == "library_button":
                 score -= 80
+        if (
+            requested_rank
+            and candidate_rank == requested_rank
+            and not wants_ranked_item
+            and not has_target_evidence
+        ):
+            score -= 80
         if semantic_type == "clickable_item":
             score += 70
-            if requested_rank and int(candidate.get("result_rank") or 0) == requested_rank:
+            if (
+                requested_rank
+                and int(candidate.get("result_rank") or 0) == requested_rank
+                and (wants_ranked_item or has_target_evidence)
+            ):
                 score += 200
                 if wants_item_action:
                     score -= 35
-        elif requested_rank and candidate_rank == requested_rank:
+        elif (
+            requested_rank
+            and candidate_rank == requested_rank
+            and (wants_ranked_item or has_target_evidence)
+        ):
             score += 200
             if candidate.get("related_item_rank"):
                 if _is_item_action_candidate(candidate):
@@ -251,6 +337,33 @@ def _action_rank(action_type: str, candidate: dict, step: dict) -> tuple[int, in
             score += 30
         if candidate.get("upload_label") and candidate["upload_label"].lower() in target:
             score += 30
+        if "drop files" in str(candidate.get("context_text") or "").lower():
+            score += 70
+    elif action_type == "set_range":
+        if tag == "input" and (candidate.get("type") or "").lower() == "range":
+            score += 80
+        elif tag == "input" and (candidate.get("type") or "").lower() == "number":
+            score += 45
+        elif _looks_like_numeric_value_input(candidate):
+            score += 55
+    elif action_type == "set_timecode":
+        if semantic_type == "composite_time_input":
+            score += 80
+        indexes = [
+            int(item.get("index", 0))
+            for item in candidate.get("selector_metadata") or []
+            if item.get("selector") and int(item.get("match_count", 1)) > 1
+        ]
+        occurrence = min(indexes) if indexes else 0
+        if any(word in target for word in ["start", "begin", "from", "开始", "起始"]):
+            score += 80 if occurrence == 0 else -40
+        if any(word in target for word in ["end", "until", "结束", "终止"]):
+            score += 80 if occurrence > 0 else -40
+    elif action_type == "drag":
+        if candidate.get("is_visible"):
+            score += 30
+        if semantic_type == "clickable_item":
+            score += 25
 
     if candidate.get("selector_metadata"):
         unique_count = sum(1 for item in candidate["selector_metadata"] if item.get("unique"))
@@ -264,6 +377,15 @@ def _action_rank(action_type: str, candidate: dict, step: dict) -> tuple[int, in
 def _target_wants_focus(step: dict) -> bool:
     target = str(step.get("target") or "").lower()
     return any(word in target for word in ["focus", "聚焦", "点击输入框", "click input"])
+
+
+def _looks_like_numeric_value_input(candidate: dict) -> bool:
+    if (candidate.get("tag") or "").lower() != "input":
+        return False
+    if (candidate.get("type") or "").lower() not in {"text", "number", ""}:
+        return False
+    value = str(candidate.get("value") or candidate.get("current_value") or "").strip().lower()
+    return bool(re.fullmatch(r"\d+(?:\.\d+)?\s*(?:x|%)?", value))
 
 
 def _mentions_first_result(target: str) -> bool:
@@ -366,6 +488,36 @@ def _candidate_blob(candidate: dict) -> str:
     options = candidate.get("options") or []
     parts.extend(str(option.get("text") or option.get("value") or "") for option in options if isinstance(option, dict))
     return " ".join(str(part).lower() for part in parts if part)
+
+
+def _candidate_has_target_evidence(target: str, blob: str) -> bool:
+    if not _satisfies_strict_font_qualifiers(target, blob):
+        return False
+    return _keyword_hits(target, blob) > 0
+
+
+def _satisfies_strict_font_qualifiers(target: str, blob: str) -> bool:
+    target_lower = str(target or "").lower()
+    if not any(word in target_lower for word in ["font", "sans", "serif", "simhei", "yahei", "pingfang", "noto", "source han", "cjk"]):
+        return True
+    blob_lower = str(blob or "").lower()
+    strict_terms = [
+        "cjk",
+        " sc",
+        " tc",
+        "simhei",
+        "yahei",
+        "pingfang",
+        "source han",
+        "microsoft yahei",
+        "chinese",
+        "simplified chinese",
+        "traditional chinese",
+    ]
+    required = [term for term in strict_terms if term in f" {target_lower} "]
+    if not required:
+        return True
+    return all(term.strip() in blob_lower for term in required)
 
 
 def _keyword_hits(text: str, blob: str) -> int:

@@ -1,9 +1,9 @@
 DrissionPage==4.1.1.4
 openai>=2.43.0
+socksio>=1.0.0
 python-dotenv>=1.0.1
 pydantic>=2.8.0
 jinja2>=3.1.4
 rich>=13.7.1
 beautifulsoup4>=4.12.3
 pytest>=8.2.0
-

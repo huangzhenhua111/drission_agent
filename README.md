@@ -16,66 +16,73 @@
 
 最终交付的 `script_final.py` 必须是纯 DrissionPage 代码，不包含 OpenAI、LLM、Agent 内部模块或 `.env` 依赖。
 
-## Windows 原生运行
+## Linux 运行（主路径）
 
 推荐环境：
 
-- Windows 11
+- Ubuntu 22.04/24.04 或同类 Linux 发行版
 - Python 3.11+
-- Microsoft Edge 或 Chrome
+- Linux Google Chrome 或 Chromium
 - DrissionPage 4.1.1.4
 
-建议项目路径使用英文、无空格目录，例如：
+建议把项目放在 Linux 用户目录，例如 `~/workspace/drission_agent`。
 
-```powershell
-C:\agent_browser_drission
-```
-
-当前仓库也支持在 `C:\workspace\drission_agent` 下开发。
-
-## 安装
-
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip ca-certificates wget fonts-noto-cjk
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-如果 PowerShell 执行策略阻止激活：
+安装 Chrome：
 
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
+```bash
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo apt install -y ./google-chrome-stable_current_amd64.deb
+google-chrome --version
+```
+
+桌面 Linux 可视化运行前确认图形会话可用：
+
+```bash
+echo "$DISPLAY"
+echo "$WAYLAND_DISPLAY"
 ```
 
 复制 `.env.example` 为 `.env`，填入：
 
-```powershell
-OPENAI_API_KEY=your_api_key
-OPENAI_MODEL=gpt-4.1-mini
-BROWSER_TYPE=edge
-BROWSER_PATH=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
-BROWSER_USER_DATA_PATH=outputs\browser_profiles\edge
+```dotenv
+TEXT_LLM_API_KEY=your_deepseek_key
+TEXT_LLM_MODEL=deepseek-chat
+TEXT_LLM_BASE_URL=https://api.deepseek.com
+VISION_LLM_API_KEY=your_dashscope_key
+VISION_LLM_MODEL=qwen3-vl-flash
+VISION_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+BROWSER_TYPE=chrome
+BROWSER_PATH=/usr/bin/google-chrome
+BROWSER_USER_DATA_PATH=outputs/browser_profiles/chrome
+BROWSER_DEBUG_PORT=19222
+BROWSER_HEADLESS=0
 OUTPUT_DIR=outputs
 ```
 
-如果本机 Chrome 不在默认安装目录，可以直接指向快捷方式解析出的本体路径，例如：
+Planner、SelectorGrounder 的 LLM 决策和 replan 使用 `TEXT_LLM_*`；只有 DOM 无法可靠定位、进入截图视觉点击 fallback 时才使用 `VISION_LLM_*`。旧的 `OPENAI_* / DEEPSEEK_* / DASHSCOPE_*` 文本配置仍兼容，但不会替代显式的 `VISION_LLM_*`。
 
-```powershell
-$env:BROWSER_PATH='C:\soft\Chrome\Application\chrome.exe'
-```
+`BROWSER_PATH` 最好设置为 `command -v google-chrome` 返回的实际路径，也可以省略；Runtime 会依次查找 `google-chrome`、`google-chrome-stable`、`chromium` 和 `chromium-browser`。桌面调试使用 `BROWSER_HEADLESS=0`，服务器/CI 使用 `BROWSER_HEADLESS=1`。
 
-Runtime 和 smoke 脚本默认使用独立用户数据目录与自动调试端口，避免和已经打开的 Chrome/Edge 用户会话冲突。
+Runtime 和 smoke 脚本使用独立 Linux 用户数据目录，避免干扰日常浏览器 profile。
 
 ## 预检
 
-```powershell
-python scripts\smoke_python.py
-python scripts\smoke_drission.py
-python scripts\smoke_openai.py
-python scripts\smoke_real_web_form.py
-python scripts\smoke_real_page_snapshot.py https://viggle.ai/app/mix --wait 8 --label viggle_mix_snapshot
+```bash
+python scripts/smoke_python.py
+BROWSER_HEADLESS=0 python scripts/smoke_drission.py
+BROWSER_HEADLESS=1 python scripts/smoke_drission.py
+python scripts/smoke_openai.py
+BROWSER_HEADLESS=1 python scripts/smoke_real_web_form.py
+BROWSER_HEADLESS=1 python scripts/smoke_real_page_snapshot.py https://viggle.ai/app/mix --wait 8 --label viggle_mix_snapshot
 ```
 
 说明：
@@ -99,19 +106,21 @@ python scripts\smoke_real_page_snapshot.py https://viggle.ai/app/mix --wait 8 --
 
 后续主命令会是：
 
-```powershell
-python -m app.cli --mock-llm --task-file examples\local_search\task.txt
-python -m app.cli --task-file examples\real_selenium_web_form\task.txt --max-retries 3
+```bash
+python -m app.cli --headed --mock-llm --task-file examples/local_search/task.txt
+python -m app.cli --headless --task-file examples/real_selenium_web_form/task.txt --max-retries 3
 ```
 
 当前阶段可用命令：
 
-```powershell
-python -m app.cli --mock-llm --plan-only --task-file examples\local_search\task.txt
-python -m app.cli --mock-llm --capture-only --task-file examples\local_search\task.txt
-python -m app.cli --mock-llm --capture-only --task-file examples\local_form\task.txt
-python -m app.cli --mock-llm --capture-only --task-file examples\real_selenium_web_form\task.txt
+```bash
+python -m app.cli --mock-llm --plan-only --task-file examples/local_search/task.txt
+python -m app.cli --headed --mock-llm --capture-only --task-file examples/local_search/task.txt
+python -m app.cli --headed --mock-llm --capture-only --task-file examples/local_form/task.txt
+python -m app.cli --headless --mock-llm --capture-only --task-file examples/real_selenium_web_form/task.txt
 ```
+
+在可视化模式下，检测到登录页或登录弹窗时，系统默认暂停并等待用户在浏览器中完成登录；登录成功后会自动继续执行。Chrome 用户目录会持久化，因此登录态未失效时，后续运行无需重复登录。无人值守任务如需在遇到登录时立即失败，可增加 `--no-wait-for-login`。
 
 ## 输出目录
 
@@ -141,7 +150,7 @@ outputs/<run_id>/
 - 已实现 `app/generation/dom_snapshot.py` 的 HTML candidate 提取。
 - 已实现 `app/resilience/selectors.py` 的 selector 构建、去重、脆弱 XPath 过滤和过宽 selector 过滤。
 - 已实现 `app/runtime/drission_runtime.py` 的 DrissionPage runtime 边界和动作 fallback。
-- 已用真实 Edge 与 Chrome 验证 DrissionPage smoke；Chrome 验证路径为 `C:\soft\Chrome\Application\chrome.exe`。
+- Linux 是默认验收环境；Windows Chrome/Edge 路径仅作为代码兼容 fallback 保留。
 - 已用真实网页 `https://www.selenium.dev/selenium/web/web-form.html` 验证 DOM candidate 抽取和 selector 可用性。
 - 已用复杂真实页面 `https://viggle.ai/app/mix` 验证动态页面 snapshot。现在输出拆成两份：`raw_candidates.json` / `dom_snapshots/raw_step_*.json` 保留完整调试字段如 `context_chain`、`css_path`；`candidates.json` / `dom_snapshots/step_*.json` 是传给 Grounder 的 action-specific compact 候选，会按 `click/input/select/upload` 过滤候选、裁剪字段并调整排序。
 - `input` 视图只保留文本输入控件，`select` 视图只保留下拉框并携带 `options/selected`，`upload` 视图保留 `file_input/upload_zone` 并允许隐藏文件 input，`click` 视图排除文本输入框、下拉框、文件 input 和不可见元素。

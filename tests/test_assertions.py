@@ -113,3 +113,51 @@ def test_validate_capture_success_rejects_my_library_target_grounded_to_history(
     )
 
     assert "task requested My Library but captured workflow did not select or verify My Library" in issues
+
+
+def test_validate_capture_success_requires_visual_rendering_for_cjk_rich_text() -> None:
+    issues = validate_capture_success(
+        task="输入标题短视频测试",
+        captured_actions=[
+            {
+                "type": "input",
+                "target": "Title text",
+                "after_url": "https://example.test/editor",
+                "after_title": "Editor",
+                "postcondition": {
+                    "type": "editable_text_equals",
+                    "value": "短视频测试",
+                    "requires_visual_text_rendering": True,
+                },
+                "postcondition_passed": True,
+            }
+        ],
+        success_assertions=[],
+    )
+
+    assert (
+        "contenteditable CJK text matched DOM but readable visual rendering was not verified"
+        in issues
+    )
+
+    issues = validate_capture_success(
+        task="输入标题短视频测试",
+        captured_actions=[
+            {
+                "type": "input",
+                "target": "Title text",
+                "after_url": "https://example.test/editor",
+                "after_title": "Editor",
+                "postcondition": {
+                    "type": "editable_text_equals",
+                    "value": "短视频测试",
+                    "requires_visual_text_rendering": True,
+                },
+                "postcondition_passed": True,
+                "rendered_text_readable": True,
+            }
+        ],
+        success_assertions=[],
+    )
+
+    assert issues == []

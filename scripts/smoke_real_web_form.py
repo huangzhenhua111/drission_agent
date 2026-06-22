@@ -11,6 +11,8 @@ from app.runtime.drission_runtime import DrissionRuntime
 
 
 REAL_WEB_FORM_URL = "https://www.selenium.dev/selenium/web/web-form.html"
+UPLOAD_FIXTURE = ROOT / "examples" / "local_form" / "site" / "upload_fixture.txt"
+SCREENSHOT_PATH = ROOT / "outputs" / "smoke_real_web_form_submitted.png"
 
 
 REQUIRED_CANDIDATES = {
@@ -59,7 +61,20 @@ def main() -> int:
 
         runtime.input(found["text_input"]["selector_candidates"], "hello-real-dom", "text input")
         runtime.select(found["select"]["selector_candidates"], "Two", "text", "select menu")
-        print("action_check: input and select succeeded")
+        runtime.upload(
+            found["file"]["selector_candidates"],
+            str(UPLOAD_FIXTURE.resolve()),
+            "file upload",
+        )
+        runtime.click(found["submit"]["selector_candidates"], "Submit")
+        runtime.wait(1)
+        submitted_state = runtime.state()
+        if "Received!" not in submitted_state.get("text_excerpt", ""):
+            raise AssertionError(f"form submission was not confirmed: {submitted_state}")
+        runtime.screenshot(str(SCREENSHOT_PATH))
+        print(f"submitted_url: {submitted_state['url']}")
+        print(f"screenshot: {SCREENSHOT_PATH}")
+        print("action_check: input, select, upload, and verified submit succeeded")
         return 0
     finally:
         runtime.close()

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import platform
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +61,8 @@ class DrissionRuntime:
         address = f"127.0.0.1:{self.settings.browser_debug_port}"
         if browser_path:
             options = ChromiumOptions()
+            if hasattr(options, "headless"):
+                options.headless(self.settings.browser_headless)
             if hasattr(options, "set_browser_path"):
                 options.set_browser_path(str(browser_path))
             if profile_path and hasattr(options, "set_user_data_path"):
@@ -69,6 +73,8 @@ class DrissionRuntime:
             return
 
         options = ChromiumOptions()
+        if hasattr(options, "headless"):
+            options.headless(self.settings.browser_headless)
         if profile_path and hasattr(options, "set_user_data_path"):
             options.set_user_data_path(str(profile_path))
         if hasattr(options, "set_address"):
@@ -131,6 +137,33 @@ class DrissionRuntime:
             raise RuntimeError(f"Visual click failed for {target}: no element at ({x}, {y})")
         return f"visual:{x},{y}"
 
+    def double_click(
+        self,
+        selectors: list[str],
+        target: str,
+        *,
+        selector_indexes: dict[str, int] | None = None,
+    ) -> str:
+        ele, used_selector = self.find_first(
+            selectors, target=target, selector_indexes=selector_indexes
+        )
+        ele.click()
+        self.wait(0.1)
+        ele.run_js(
+            """
+            const rect = this.getBoundingClientRect();
+            this.dispatchEvent(new MouseEvent('dblclick', {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              detail: 2,
+              clientX: rect.left + rect.width / 2,
+              clientY: rect.top + rect.height / 2,
+            }));
+            """
+        )
+        return used_selector
+
     def input(
         self,
         selectors: list[str],
@@ -142,7 +175,32 @@ class DrissionRuntime:
         ele, used_selector = self.find_first(
             selectors, target=target, selector_indexes=selector_indexes
         )
-        ele.input(value)
+        if hasattr(ele, "focus"):
+            ele.focus()
+        if _is_contenteditable_element(ele) and hasattr(page := self._require_page(), "_run_cdp"):
+            # Rich canvas editors commonly keep a selected text object in a
+            # contenteditable while listening to real keyboard/input events to
+            # update their timeline model. Direct DOM mutation can make the
+            # element text look correct without updating the rendered object.
+            _dispatch_key_chord(page, "CTRL", "A")
+            page._run_cdp("Input.insertText", text=value)
+        else:
+            # ChromiumElement.input() defaults to clear=False. Appending to an
+            # editor default such as "Sample Text" is never a valid replace.
+            ele.input(value, clear=True)
+        ele.run_js(
+            """
+            this.dispatchEvent(new InputEvent('input', {
+              bubbles: true,
+              inputType: 'insertText',
+              data: String(arguments[0]),
+            }));
+            this.dispatchEvent(new Event('change', {bubbles: true}));
+            this.blur();
+            """,
+            value,
+        )
+        self.wait(0.2)
         return used_selector
 
     def select(
@@ -185,6 +243,155 @@ class DrissionRuntime:
         ele.input(str(Path(path)))
         return used_selector
 
+    def set_range(
+        self,
+        selectors: list[str],
+        value: str,
+        target: str,
+        *,
+        selector_indexes: dict[str, int] | None = None,
+    ) -> str:
+        ele, used_selector = self.find_first(
+            selectors, target=target, selector_indexes=selector_indexes
+        )
+        applied = ele.run_js(
+            """
+            const value = String(arguments[0]);
+            this.value = value;
+            this.dispatchEvent(new Event('input', {bubbles: true}));
+            this.dispatchEvent(new Event('change', {bubbles: true}));
+            return String(this.value);
+            """,
+            value,
+        )
+        if str(applied) != str(value):
+            raise RuntimeError(
+                f"Range value did not apply for {target}: expected {value!r}, got {applied!r}"
+            )
+        return used_selector
+
+    def set_timecode(
+        self,
+        selectors: list[str],
+        value: str,
+        target: str,
+        *,
+        selector_indexes: dict[str, int] | None = None,
+    ) -> str:
+        _, used_selector = self.find_first(
+            selectors, target=target, selector_indexes=selector_indexes
+        )
+        expected = _parse_timecode(value)
+        field_selectors = {
+            "hours": "css:.input-hours .input",
+            "minutes": "css:.input-minutes .input",
+            "seconds": "css:.input-seconds .input",
+            "milliseconds": "css:.input-milliseconds .input",
+        }
+        for kind, field_selector in field_selectors.items():
+            # Reactive editors commonly rerender the whole stepper after one
+            # segment changes, so reacquire both group and field each time.
+            group, _ = self.find_first(
+                selectors, target=target, selector_indexes=selector_indexes
+            )
+            field = group.ele(field_selector, timeout=1)
+            if not field or not _element_is_displayed(field):
+                continue
+            current = str(getattr(field, "text", "") or "").strip()
+            width = max(1, len(current))
+            next_value = str(expected[kind])
+            if kind == "milliseconds":
+                next_value = next_value[:width].ljust(width, "0")
+            else:
+                next_value = next_value.zfill(width)
+            if current == next_value:
+                continue
+            field.input(next_value)
+            self.wait(0.2)
+
+        group, _ = self.find_first(
+            selectors, target=target, selector_indexes=selector_indexes
+        )
+        actual = group.run_js(
+            """
+            const result = {};
+            for (const kind of ['hours', 'minutes', 'seconds', 'milliseconds']) {
+              const field = this.querySelector(`.input-${kind} .input`);
+              if (field && field.getClientRects().length) result[kind] = field.textContent.trim();
+            }
+            return result;
+            """
+        )
+        for kind, actual_value in (actual or {}).items():
+            if int(actual_value or 0) != int(expected[kind] or 0):
+                raise RuntimeError(
+                    f"Timecode did not apply for {target}: {kind} expected "
+                    f"{expected[kind]!r}, got {actual_value!r}"
+                )
+        return used_selector
+
+    def drag(
+        self,
+        selectors: list[str],
+        delta_x: float,
+        delta_y: float,
+        duration: float,
+        target: str,
+        *,
+        selector_indexes: dict[str, int] | None = None,
+    ) -> str:
+        ele, used_selector = self.find_first(
+            selectors, target=target, selector_indexes=selector_indexes
+        )
+        ele.drag(offset_x=delta_x, offset_y=delta_y, duration=duration)
+        return used_selector
+
+    def press_key(self, key: str, target: str = "page") -> str:
+        page = self._require_page()
+        normalized = str(key or "").strip().upper()
+        if not normalized:
+            raise ValueError(f"Keyboard key is empty for {target}")
+        chord = _normalize_key_chord(normalized)
+        if chord and hasattr(page, "_run_cdp"):
+            modifier, letter = chord
+            _dispatch_key_chord(page, modifier, letter)
+            return f"key:{modifier}+{letter}"
+        key_specs = {
+            "BACKSPACE": ("Backspace", "Backspace", 8, "deleteBackward"),
+            "DELETE": ("Delete", "Delete", 46, "deleteForward"),
+            "ENTER": ("Enter", "Enter", 13, None),
+            "ESC": ("Escape", "Escape", 27, None),
+            "ESCAPE": ("Escape", "Escape", 27, None),
+            "ARROWLEFT": ("ArrowLeft", "ArrowLeft", 37, None),
+            "ARROWUP": ("ArrowUp", "ArrowUp", 38, None),
+            "ARROWRIGHT": ("ArrowRight", "ArrowRight", 39, None),
+            "ARROWDOWN": ("ArrowDown", "ArrowDown", 40, None),
+        }
+        spec = key_specs.get(normalized)
+        if spec and hasattr(page, "_run_cdp"):
+            key_name, code, virtual_key, command = spec
+            down = {
+                "type": "rawKeyDown",
+                "key": key_name,
+                "code": code,
+                "windowsVirtualKeyCode": virtual_key,
+                "nativeVirtualKeyCode": virtual_key,
+            }
+            if command:
+                down["commands"] = [command]
+            page._run_cdp("Input.dispatchKeyEvent", **down)
+            page._run_cdp(
+                "Input.dispatchKeyEvent",
+                type="keyUp",
+                key=key_name,
+                code=code,
+                windowsVirtualKeyCode=virtual_key,
+                nativeVirtualKeyCode=virtual_key,
+            )
+        else:
+            page.actions.key_down(normalized).key_up(normalized)
+        return f"key:{normalized}"
+
     def wait(self, seconds: float) -> None:
         page = self._require_page()
         page.wait(seconds)
@@ -208,6 +415,43 @@ class DrissionRuntime:
             "html_excerpt": html[:4000],
             "text_excerpt": str(text)[:4000],
         }
+
+    def timeline_media_present(self) -> bool:
+        page = self._require_page()
+        return bool(
+            page.run_js(
+                r"""
+                const explicit = document.querySelector(
+                  '[data-clip], [data-track-item], [class*="timeline"] [class*="clip"], '
+                  + '[class*="timeline"] [class*="fragment"], [class*="track"] [class*="clip"]'
+                );
+                if (explicit) return true;
+                const canvases = Array.from(document.querySelectorAll(
+                  '[class*="timeline"] canvas, [class*="track"] canvas'
+                ));
+                return canvases.some(canvas => {
+                  try {
+                    const context = canvas.getContext('2d');
+                    if (!context || canvas.width < 80 || canvas.height < 40) return false;
+                    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+                    let samples = 0;
+                    let bright = 0;
+                    let colorful = 0;
+                    for (let i = 0; i < data.length; i += 40) {
+                      const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+                      if (a === 0) continue;
+                      samples += 1;
+                      if ((r + g + b) / 3 > 80) bright += 1;
+                      if (Math.max(r, g, b) - Math.min(r, g, b) > 20) colorful += 1;
+                    }
+                    return samples > 0 && (bright / samples > 0.05 || colorful / samples > 0.02);
+                  } catch (_) {
+                    return false;
+                  }
+                });
+                """
+            )
+        )
 
     def screenshot(self, path: str) -> None:
         page = self._require_page()
@@ -288,16 +532,36 @@ class DrissionRuntime:
 
     def _resolve_browser_path(self) -> Path | None:
         if self.settings.browser_path:
-            configured = Path(self.settings.browser_path)
+            configured = Path(self.settings.browser_path).expanduser().resolve()
             if configured.exists():
                 return configured
 
-        candidates = [
-            Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-            Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-            Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
-            Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+        for executable in (
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+        ):
+            discovered = shutil.which(executable)
+            if discovered:
+                return Path(discovered).resolve()
+
+        user_local_candidates = [
+            Path.home() / ".local/bin/google-chrome",
+            Path.home() / ".local/opt/google-chrome-deb/opt/google/chrome/google-chrome",
         ]
+        for candidate in user_local_candidates:
+            if candidate.exists():
+                return candidate.resolve()
+
+        candidates = []
+        if platform.system() == "Windows":
+            candidates = [
+                Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+                Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+                Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+                Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            ]
         for candidate in candidates:
             if candidate.exists():
                 return candidate
@@ -307,7 +571,7 @@ class DrissionRuntime:
         if self.settings.browser_user_data_path:
             path = self.settings.browser_user_data_path
         else:
-            browser_name = browser_path.stem if browser_path else self.settings.browser_type
+            browser_name = "chrome" if browser_path else self.settings.browser_type
             path = self.settings.output_dir / "browser_profiles" / browser_name
         path.mkdir(parents=True, exist_ok=True)
         return path.resolve()
@@ -337,6 +601,32 @@ class DrissionRuntime:
                 value=raw.get("value"),
                 data_attrs=data_attrs,
             )
+            if semantic_type == "composite_time_input":
+                class_names = [
+                    name
+                    for name in str(raw.get("class_name") or "").split()
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name)
+                    and "time-stepper" in name
+                ]
+                if class_names:
+                    group_selector = (
+                        f"css:{raw.get('tag') or 'div'}."
+                        + ".".join(class_names)
+                    )
+                    selectors = [group_selector] + [
+                        selector for selector in selectors if selector != group_selector
+                    ]
+            if (
+                raw.get("css_path")
+                and (
+                    raw.get("cursor_pointer")
+                    or semantic_type in {"composite_time_input", "contenteditable"}
+                )
+            ):
+                css_path_selector = f"css:{raw['css_path']}"
+                selectors = [css_path_selector] + [
+                    selector for selector in selectors if selector != css_path_selector
+                ]
             if not selectors:
                 continue
             candidates.append(
@@ -344,6 +634,7 @@ class DrissionRuntime:
                     "candidate_id": f"e{index}",
                     "dom_index": raw.get("dom_index"),
                     "tag": raw.get("tag"),
+                    "class_name": raw.get("class_name"),
                     "semantic_type": semantic_type,
                     "action_allowed": action_allowed,
                     "text": text,
@@ -523,6 +814,12 @@ def _semantic_type(raw: dict) -> str:
     ).lower()
     if tag == "input" and type_value == "file":
         return "file_input"
+    if "time-stepper" in " ".join(
+        [str(raw.get("css_path") or ""), str(raw.get("class_name") or "")]
+    ):
+        return "composite_time_input"
+    if str(raw.get("contenteditable") or "").lower() == "true":
+        return "contenteditable"
     own_labels = {
         str(value or "").strip().lower()
         for value in [raw.get("text"), raw.get("accessible_name"), raw.get("aria_label")]
@@ -532,6 +829,8 @@ def _semantic_type(raw: dict) -> str:
         return "library_button"
     if role == "button" and ("upload" in text_blob or "drag and drop" in text_blob):
         return "upload_zone"
+    if raw.get("cursor_pointer"):
+        return "clickable_item"
     if _is_clickable_item(raw, text_blob):
         return "clickable_item"
     if tag == "select":
@@ -553,6 +852,10 @@ def _action_allowed(raw: dict, semantic_type: str) -> list[str]:
     role = (raw.get("role") or "").lower()
     if semantic_type == "file_input":
         return ["upload"]
+    if semantic_type == "composite_time_input":
+        return ["set_timecode", "click"]
+    if semantic_type == "contenteditable":
+        return ["input", "click", "double_click"]
     if semantic_type == "upload_zone":
         return ["click", "click_upload_zone"]
     if semantic_type == "library_button":
@@ -600,10 +903,74 @@ def _is_clickable_item(raw: dict, text_blob: str) -> bool:
     return True
 
 
+def _parse_timecode(value: str) -> dict[str, str]:
+    match = re.fullmatch(
+        r"(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:\.(\d+))?",
+        str(value or "").strip(),
+    )
+    if not match:
+        raise ValueError(f"Unsupported timecode value: {value!r}")
+    return {
+        "hours": match.group(1) or "0",
+        "minutes": match.group(2),
+        "seconds": match.group(3),
+        "milliseconds": match.group(4) or "0",
+    }
+
+
+_SET_TIMECODE_JS = r"""
+const raw = String(arguments[0] || '').trim();
+const match = raw.match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:\.(\d+))?$/);
+if (!match) return {ok: false, error: `unsupported timecode ${raw}`};
+
+const hasHours = match[1] !== undefined;
+const values = {
+  hours: hasHours ? match[1] : '0',
+  minutes: hasHours ? match[2] : match[2],
+  seconds: match[3],
+  milliseconds: match[4] || '0',
+};
+const fields = Array.from(this.querySelectorAll('[contenteditable="true"]'));
+if (!fields.length) return {ok: false, error: 'no editable time fields'};
+
+function fieldKind(field) {
+  const owner = field.closest('[class*="input-"]');
+  const classes = String(owner ? owner.className : field.parentElement?.className || '').toLowerCase();
+  if (classes.includes('hour')) return 'hours';
+  if (classes.includes('minute')) return 'minutes';
+  if (classes.includes('millisecond') || classes.includes('fraction')) return 'milliseconds';
+  if (classes.includes('second')) return 'seconds';
+  return null;
+}
+
+const applied = {};
+for (const field of fields) {
+  const kind = fieldKind(field);
+  if (!kind || !(kind in values)) continue;
+  const width = Math.max(1, String(field.textContent || '').trim().length);
+  let next = String(values[kind]);
+  if (kind === 'milliseconds') next = next.slice(0, width).padEnd(width, '0');
+  else next = next.padStart(width, '0');
+  field.focus();
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(field);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  document.execCommand('insertText', false, next);
+  field.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: next}));
+  field.dispatchEvent(new Event('change', {bubbles: true}));
+  field.blur();
+  applied[kind] = String(field.textContent || '').trim();
+}
+return {ok: Object.keys(applied).length >= 2, applied};
+"""
+
+
 _BROWSER_CANDIDATE_JS = r"""
 return (() => {
   const interactiveTags = new Set(['a', 'button', 'input', 'textarea', 'select', 'option', 'label']);
-  const interactiveAttrs = ['role', 'onclick', 'tabindex'];
+  const interactiveAttrs = ['role', 'onclick', 'tabindex', 'contenteditable'];
   const skippedTags = new Set(['script', 'style', 'noscript', 'template', 'meta', 'link']);
 
   function attr(el, name) {
@@ -631,6 +998,12 @@ return (() => {
     if (skippedTags.has(tag)) return false;
     if (interactiveTags.has(tag)) return true;
     if (interactiveAttrs.some(name => el.hasAttribute(name))) return true;
+    const text = textOf(el);
+    if (
+      text &&
+      text.length <= 160 &&
+      window.getComputedStyle(el).cursor === 'pointer'
+    ) return true;
     for (const item of el.attributes) {
       if (item.name.startsWith('data-')) return true;
     }
@@ -666,6 +1039,18 @@ return (() => {
       if (id) {
         parts.unshift(`${tag}#${CSS.escape(id)}`);
         break;
+      }
+      const stableClasses = Array.from(current.classList || [])
+        .filter(name => name && !/^active$|^selected$|^open$|^show$/.test(name))
+        .slice(0, 2);
+      if (stableClasses.length) {
+        const classSelector = `${tag}.${stableClasses.map(name => CSS.escape(name)).join('.')}`;
+        try {
+          if (document.querySelectorAll(classSelector).length === 1) {
+            parts.unshift(classSelector);
+            break;
+          }
+        } catch (_) {}
       }
       let index = 1;
       let previous = current.previousElementSibling;
@@ -825,6 +1210,7 @@ return (() => {
       return {
         dom_index: index,
         tag,
+        class_name: typeof el.className === 'string' ? el.className : (el.className?.baseVal || ''),
         text: textOf(el),
         id: attr(el, 'id'),
         name: attr(el, 'name'),
@@ -834,7 +1220,7 @@ return (() => {
         aria_selected: attr(el, 'aria-selected'),
         data_state: attr(el, 'data-state'),
         placeholder: attr(el, 'placeholder'),
-        value: attr(el, 'value'),
+        value: ['input', 'textarea', 'select'].includes(tag) ? String(el.value || '') : attr(el, 'value'),
         href: attr(el, 'href'),
         accept: attr(el, 'accept'),
         multiple: el.hasAttribute('multiple'),
@@ -848,6 +1234,7 @@ return (() => {
           ? textOf(el.selectedOptions[0]) || el.selectedOptions[0].value
           : null,
         data_attrs: dataAttrs(el),
+        cursor_pointer: window.getComputedStyle(el).cursor === 'pointer',
         is_visible: isVisible(el),
         rect: rectOf(el),
         css_path: cssPath(el),
@@ -863,6 +1250,74 @@ return (() => {
     });
 })();
 """
+
+
+def _is_contenteditable_element(element: Any) -> bool:
+    attr = getattr(element, "attr", None)
+    if not callable(attr):
+        return False
+    try:
+        return str(attr("contenteditable") or "").lower() == "true"
+    except Exception:
+        return False
+
+
+def _normalize_key_chord(normalized: str) -> tuple[str, str] | None:
+    compact = normalized.replace(" ", "")
+    compact = compact.replace("CONTROL+", "CTRL+")
+    compact = compact.replace("CMD+", "META+").replace("COMMAND+", "META+")
+    if "+" not in compact:
+        return None
+    modifier, key = compact.split("+", 1)
+    if modifier not in {"CTRL", "META"}:
+        return None
+    if len(key) != 1 or not key.isalpha():
+        return None
+    return modifier, key.upper()
+
+
+def _dispatch_key_chord(page, modifier: str, letter: str) -> None:
+    modifier_key = "Control" if modifier == "CTRL" else "Meta"
+    modifier_code = "ControlLeft" if modifier == "CTRL" else "MetaLeft"
+    modifier_vk = 17 if modifier == "CTRL" else 91
+    modifier_mask = 2 if modifier == "CTRL" else 4
+    letter = letter.upper()
+    letter_vk = ord(letter)
+    page._run_cdp(
+        "Input.dispatchKeyEvent",
+        type="rawKeyDown",
+        key=modifier_key,
+        code=modifier_code,
+        windowsVirtualKeyCode=modifier_vk,
+        nativeVirtualKeyCode=modifier_vk,
+        modifiers=modifier_mask,
+    )
+    page._run_cdp(
+        "Input.dispatchKeyEvent",
+        type="rawKeyDown",
+        key=letter.lower(),
+        code=f"Key{letter}",
+        windowsVirtualKeyCode=letter_vk,
+        nativeVirtualKeyCode=letter_vk,
+        modifiers=modifier_mask,
+    )
+    page._run_cdp(
+        "Input.dispatchKeyEvent",
+        type="keyUp",
+        key=letter.lower(),
+        code=f"Key{letter}",
+        windowsVirtualKeyCode=letter_vk,
+        nativeVirtualKeyCode=letter_vk,
+        modifiers=modifier_mask,
+    )
+    page._run_cdp(
+        "Input.dispatchKeyEvent",
+        type="keyUp",
+        key=modifier_key,
+        code=modifier_code,
+        windowsVirtualKeyCode=modifier_vk,
+        nativeVirtualKeyCode=modifier_vk,
+    )
 
 
 def main() -> int:

@@ -114,6 +114,69 @@ def test_build_grounding_candidates_filters_by_action_type() -> None:
     assert upload_ids == ["upload"]
 
 
+def test_complex_actions_filter_range_and_draggable_candidates() -> None:
+    candidates = [
+        {
+            "candidate_id": "range",
+            "tag": "input",
+            "type": "range",
+            "action_allowed": ["input", "click"],
+            "is_visible": True,
+            "selector_candidates": ["css:#speed"],
+        },
+        {
+            "candidate_id": "handle",
+            "tag": "div",
+            "semantic_type": "clickable_item",
+            "action_allowed": ["click"],
+            "is_visible": True,
+            "selector_candidates": ["css:.handle"],
+        },
+    ]
+
+    range_candidates = build_grounding_candidates(
+        {"type": "set_range", "target": "Speed", "value": "1.5"}, candidates
+    )
+    drag_candidates = build_grounding_candidates(
+        {"type": "drag", "target": "handle", "delta_x": 20}, candidates
+    )
+
+    assert [item["candidate_id"] for item in range_candidates] == ["range"]
+    assert [item["candidate_id"] for item in drag_candidates] == ["handle", "range"]
+
+
+def test_set_range_keeps_visible_numeric_text_field() -> None:
+    candidates = build_grounding_candidates(
+        {"type": "set_range", "target": "Speed slider", "value": "1.5"},
+        [
+            {
+                "candidate_id": "speed_value",
+                "tag": "input",
+                "type": "text",
+                "semantic_type": "input_text",
+                "action_allowed": ["input", "click"],
+                "value": "1x",
+                "context_text": "Speed",
+                "is_visible": True,
+                "selector_candidates": ["css:input[value='1x']"],
+            },
+            {
+                "candidate_id": "search",
+                "tag": "input",
+                "type": "text",
+                "semantic_type": "input_text",
+                "action_allowed": ["input", "click"],
+                "value": "",
+                "context_text": "My files",
+                "is_visible": True,
+                "selector_candidates": ["css:#search"],
+            },
+        ],
+    )
+
+    assert [item["candidate_id"] for item in candidates] == ["speed_value"]
+
+
 def test_select_view_keeps_options_and_drops_click_noise() -> None:
     candidates = build_grounding_candidates(
         {"type": "select", "target": "Type", "value": "Two"},
@@ -221,6 +284,75 @@ def test_click_view_prioritizes_requested_ranked_clickable_item() -> None:
     assert candidates[0]["candidate_id"] == "item_2"
 
 
+def test_click_view_does_not_let_rank_override_missing_target_evidence() -> None:
+    candidates = build_grounding_candidates(
+        {
+            "type": "click",
+            "target": "first Add text button for Open Sans style",
+        },
+        [
+            {
+                "candidate_id": "projects",
+                "tag": "a",
+                "semantic_type": "clickable_item",
+                "action_allowed": ["click"],
+                "text": "My projects",
+                "accessible_name": "My projects",
+                "result_rank": 1,
+                "is_visible": True,
+                "selector_candidates": ["text=My projects"],
+            },
+            {
+                "candidate_id": "add_text",
+                "tag": "button",
+                "semantic_type": "clickable_item",
+                "action_allowed": ["click"],
+                "context_text": "Add text",
+                "result_rank": 10,
+                "is_visible": True,
+                "selector_candidates": ["css:.add-text"],
+            },
+        ],
+    )
+
+    assert candidates[0]["candidate_id"] == "add_text"
+
+
+def test_font_target_with_cjk_qualifier_ranks_exact_cjk_font_over_plain_noto() -> None:
+    candidates = build_grounding_candidates(
+        {
+            "type": "click",
+            "target": "Noto Sans CJK SC",
+        },
+        [
+            {
+                "candidate_id": "plain-noto",
+                "tag": "li",
+                "role": "option",
+                "semantic_type": "clickable_item",
+                "action_allowed": ["click"],
+                "text": "Noto Sans",
+                "accessible_name": "Noto Sans",
+                "is_visible": True,
+                "selector_candidates": ["text=Noto Sans"],
+            },
+            {
+                "candidate_id": "cjk-noto",
+                "tag": "li",
+                "role": "option",
+                "semantic_type": "clickable_item",
+                "action_allowed": ["click"],
+                "text": "Noto Sans CJK SC",
+                "accessible_name": "Noto Sans CJK SC",
+                "is_visible": True,
+                "selector_candidates": ["text=Noto Sans CJK SC"],
+            },
+        ],
+    )
+
+    assert candidates[0]["candidate_id"] == "cjk-noto"
+
+
 def test_click_view_prioritizes_related_ranked_item_action_when_selecting_item() -> None:
     candidates = build_grounding_candidates(
         {
@@ -291,3 +423,34 @@ def test_click_view_prioritizes_tab_role_for_tab_targets() -> None:
     )
 
     assert candidates[0]["candidate_id"] == "my_library_tab"
+
+
+def test_double_click_canvas_text_keeps_visible_contenteditable() -> None:
+    candidates = build_grounding_candidates(
+        {"type": "double_click", "target": "New text box on canvas"},
+        [
+            {
+                "candidate_id": "canvas-title",
+                "tag": "div",
+                "semantic_type": "contenteditable",
+                "class_name": "element text-renderer wrap-content-inner",
+                "placeholder": "Sample Text",
+                "action_allowed": ["input", "click", "double_click"],
+                "is_visible": True,
+                "rect": {"x": 400, "y": 120, "width": 180, "height": 50},
+                "selector_candidates": ["css:.text-renderer"],
+            },
+            {
+                "candidate_id": "project-name",
+                "tag": "div",
+                "semantic_type": "contenteditable",
+                "class_name": "name-input transparent color-border",
+                "action_allowed": ["input", "click", "double_click"],
+                "is_visible": True,
+                "rect": {"x": 280, "y": 8, "width": 60, "height": 36},
+                "selector_candidates": ["css:.name-input"],
+            },
+        ],
+    )
+
+    assert [candidate["candidate_id"] for candidate in candidates] == ["canvas-title"]

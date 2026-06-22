@@ -26,6 +26,9 @@ def validate_capture_success(
         issues.append(f"ended on authentication page: {final_url}")
 
     for assertion in success_assertions:
+        if not isinstance(assertion, dict):
+            issues.append(f"invalid assertion value: {assertion!r}")
+            continue
         assertion_type = assertion.get("type")
         value = str(assertion.get("value") or "")
         if assertion_type == "url_contains" and value not in final_url:
@@ -46,6 +49,20 @@ def validate_capture_success(
         issues.append("selection/add task clicked a preview-only item instead of a select/use/add action")
     if _task_wants_my_library(task) and not _actions_include_my_library(captured_actions):
         issues.append("task requested My Library but captured workflow did not select or verify My Library")
+    for action in captured_actions:
+        postcondition = action.get("postcondition")
+        requires_visual_text = bool(
+            isinstance(postcondition, dict)
+            and postcondition.get("requires_visual_text_rendering")
+        )
+        requires_visual_text = requires_visual_text or (
+            action.get("semantic_type") == "contenteditable"
+            and _contains_cjk(str(action.get("value") or ""))
+        )
+        if requires_visual_text and not action.get("rendered_text_readable"):
+            issues.append(
+                "contenteditable CJK text matched DOM but readable visual rendering was not verified"
+            )
     return issues
 
 
@@ -61,13 +78,25 @@ def _is_auth_url_or_title(url: str, title: str, text: str = "") -> bool:
         "signin",
         "sign-in",
     ]
-    signed_out_markers = ["sign in", "log in", "login", "sign in with email", "sign in with google", "登录"]
+    signed_out_markers = [
+        "sign in with email",
+        "sign in with google",
+        "continue with google",
+        "continue with apple",
+        "continue with email",
+        "forgot password",
+        "登录",
+    ]
     return (
         any(marker in lowered_url for marker in markers)
         or "login" in lowered_title
         or "sign in" in lowered_title
         or any(marker in lowered_text for marker in signed_out_markers)
     )
+
+
+def _contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text))
 
 
 def _wanted_item_selection(task: str, action: dict) -> bool:

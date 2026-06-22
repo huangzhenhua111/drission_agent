@@ -99,6 +99,7 @@ def main() -> int:
         browser_path=browser_path,
         browser_user_data_path=PROFILE_DIR,
         browser_debug_port=DEBUG_PORT,
+        browser_headless=os.environ.get("BROWSER_HEADLESS", "0") == "1",
         output_dir=OUTPUT_DIR,
     )
 

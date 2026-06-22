@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import base64
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,28 +36,55 @@ class LLMClient:
 
 
 class OpenAIJsonClient(LLMClient):
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, *, provider: str = "text") -> None:
         self.settings = settings or load_settings()
+        if provider not in {"text", "vision"}:
+            raise ValueError(f"Unsupported LLM provider role: {provider!r}")
+        self.provider = provider
+
+    @classmethod
+    def for_vision(cls, settings: Settings | None = None) -> "OpenAIJsonClient":
+        return cls(settings=settings, provider="vision")
+
+    def _provider_config(self) -> tuple[str | None, str, str | None]:
+        if self.provider == "vision":
+            return (
+                self.settings.vision_llm_api_key,
+                self.settings.vision_llm_model or "",
+                self.settings.vision_llm_base_url,
+            )
+        return (
+            self.settings.openai_api_key,
+            self.settings.openai_model,
+            self.settings.openai_base_url,
+        )
 
     def complete_json(self, *, prompt: str, schema_name: str) -> LLMJsonResponse:
-        if not self.settings.openai_api_key:
+        api_key, model, base_url = self._provider_config()
+        if not api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY is not configured. Add it to .env or set it in the shell, "
+                f"{self.provider.upper()} LLM API key is not configured. Add it to .env, "
                 "or run with --mock-llm."
             )
+        if not model:
+            raise RuntimeError(f"{self.provider.upper()} LLM model is not configured in .env.")
 
         try:
             from openai import OpenAI
         except ModuleNotFoundError as exc:
             raise RuntimeError("openai package is not installed. Run: pip install -r requirements.txt") from exc
 
-        client_kwargs = {"api_key": self.settings.openai_api_key}
-        if self.settings.openai_base_url:
-            client_kwargs["base_url"] = self.settings.openai_base_url
-        client = OpenAI(**client_kwargs)
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = OpenAI(
+            **client_kwargs,
+            timeout=float(os.getenv(f"{self.provider.upper()}_LLM_TIMEOUT_SECONDS", os.getenv("LLM_TIMEOUT_SECONDS", "90"))),
+            max_retries=int(os.getenv(f"{self.provider.upper()}_LLM_MAX_RETRIES", os.getenv("LLM_MAX_RETRIES", "1"))),
+        )
         try:
             response = client.chat.completions.create(
-                model=self.settings.openai_model,
+                model=model,
                 messages=[
                     {
                         "role": "system",
@@ -74,8 +102,8 @@ class OpenAIJsonClient(LLMClient):
             raise RuntimeError(
                 _format_openai_error(
                     exc,
-                    model=self.settings.openai_model,
-                    base_url=self.settings.openai_base_url,
+                    model=model,
+                    base_url=base_url,
                 )
             ) from exc
         raw_text = response.choices[0].message.content or ""
@@ -88,10 +116,13 @@ class OpenAIJsonClient(LLMClient):
         image_path: str | Path,
         schema_name: str,
     ) -> LLMJsonResponse:
-        if not self.settings.openai_api_key:
+        api_key, model, base_url = self._provider_config()
+        if not api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY is not configured. Add it to .env or set it in the shell."
+                f"{self.provider.upper()} LLM API key is not configured. Add it to .env."
             )
+        if not model:
+            raise RuntimeError(f"{self.provider.upper()} LLM model is not configured in .env.")
 
         try:
             from openai import OpenAI
@@ -100,13 +131,17 @@ class OpenAIJsonClient(LLMClient):
 
         image = Path(image_path).read_bytes()
         image_url = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
-        client_kwargs = {"api_key": self.settings.openai_api_key}
-        if self.settings.openai_base_url:
-            client_kwargs["base_url"] = self.settings.openai_base_url
-        client = OpenAI(**client_kwargs)
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = OpenAI(
+            **client_kwargs,
+            timeout=float(os.getenv(f"{self.provider.upper()}_LLM_TIMEOUT_SECONDS", os.getenv("LLM_TIMEOUT_SECONDS", "90"))),
+            max_retries=int(os.getenv(f"{self.provider.upper()}_LLM_MAX_RETRIES", os.getenv("LLM_MAX_RETRIES", "1"))),
+        )
         try:
             response = client.chat.completions.create(
-                model=self.settings.openai_model,
+                model=model,
                 messages=[
                     {
                         "role": "system",
@@ -130,8 +165,8 @@ class OpenAIJsonClient(LLMClient):
             raise RuntimeError(
                 _format_openai_error(
                     exc,
-                    model=self.settings.openai_model,
-                    base_url=self.settings.openai_base_url,
+                    model=model,
+                    base_url=base_url,
                 )
             ) from exc
         raw_text = response.choices[0].message.content or ""

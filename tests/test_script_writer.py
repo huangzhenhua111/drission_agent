@@ -66,6 +66,15 @@ def test_script_writer_renders_standalone_drission_script() -> None:
     assert "DEFAULT_LOGIN_TIMEOUT_SECONDS = 123" in script
     assert "DEFAULT_ACTION_DELAY_SECONDS = 1.5" in script
     assert "ACTION_DELAY_SECONDS" in script
+    assert "METRICS_PATH" in script
+    assert '"llm_calls"' in script
+    assert '"total": 0' in script
+    assert "write_metrics(page, success=True" in script
+    assert "visual_coordinate_clicks" in script
+    assert "pure_execution_seconds" in script
+    assert '"postconditions": []' in script
+    assert "wait_until_timeline_media_present(page)" in script
+    assert "wait_until_visible_text(page" in script
     assert "DEFAULT_FAST_SELECTOR_TIMEOUT = 0.3" in script
     assert "def ordered_selectors(" in script
     assert "def is_volatile_selector(" in script
@@ -78,4 +87,58 @@ def test_script_writer_renders_standalone_drission_script() -> None:
     assert "visual_position" in script
     assert "auto_port" not in script
     assert "browser_profiles" in script
+    assert 'shutil.which(executable)' in script
+    assert 'options.headless(env_bool("BROWSER_HEADLESS"))' in script
+    assert "BASE_DIR / upload_path" in script
     assert validate_generated_script(script) == []
+
+
+def test_script_writer_supports_complex_editor_actions() -> None:
+    script = ScriptWriter().render(
+        [
+            {"type": "press_key", "target": "selected clip", "value": "DELETE"},
+            {"type": "press_key", "target": "text object", "value": "Control+A"},
+            {
+                "type": "double_click",
+                "target": "sample.mp4",
+                "fallback_selectors": ["css:.media-card"],
+            },
+            {
+                "type": "set_range",
+                "target": "Speed",
+                "value": "1.5",
+                "fallback_selectors": ["css:#speed"],
+            },
+            {
+                "type": "set_timecode",
+                "target": "Trim start",
+                "value": "00:02.00",
+                "fallback_selectors": ["css:.time-stepper"],
+            },
+            {
+                "type": "drag",
+                "target": "Trim handle",
+                "delta_x": 40,
+                "delta_y": 0,
+                "duration": 0.8,
+                "fallback_selectors": ["css:.trim-handle"],
+            },
+        ]
+    )
+
+    compile(script, "generated_complex_script.py", "exec")
+    assert 'action_type == "press_key"' in script
+    assert 'action_type == "double_click"' in script
+    assert 'action_type == "set_range"' in script
+    assert 'action_type == "set_timecode"' in script
+    assert 'action_type == "drag"' in script
+    assert "def press_key(" in script
+    assert "def dispatch_key_chord(" in script
+    assert "normalize_key_chord(normalized)" in script
+    assert "def set_timecode(" in script
+    assert '"deleteBackward"' in script
+    assert "this.dispatchEvent(new Event('input'" in script
+    assert "ele.drag(" in script
+    assert 'contenteditable == "true"' in script
+    assert 'page._run_cdp("Input.insertText", text=value)' in script
+    assert "ele.input(value, clear=True)" in script
